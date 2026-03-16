@@ -252,6 +252,24 @@
     .delivery-status.ok { color: #16643f; }
     .delivery-status.err { color: #a33a2f; }
     .delivery-status.loading { color: #7b5a09; }
+    .sync-config {
+      margin-top: 8px;
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: #fbfdf9;
+    }
+    .sync-config summary {
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .sync-config-row {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
 
     .risk {
       border-left: 4px solid var(--danger);
@@ -470,6 +488,14 @@
         <div class="full">
           <button class="btn primary" type="submit">提交并生成智能评分（同步飞书）</button>
           <p id="deliveryStatus" class="delivery-status">提交后会自动同步到飞书。</p>
+          <details class="sync-config">
+            <summary>飞书同步配置（GitHub Pages 必填）</summary>
+            <p class="muted">请填写你可访问的中转地址，例如：`http://127.0.0.1:8787/api/lead-submit`（本机调试）或你的公网服务地址。</p>
+            <div class="sync-config-row">
+              <input id="apiEndpointInput" placeholder="https://your-domain/api/lead-submit" />
+              <button id="saveApiBtn" class="btn" type="button">保存地址</button>
+            </div>
+          </details>
         </div>
       </form>
       <div id="scoreResult" class="result-panel" hidden>
@@ -508,9 +534,34 @@
   </footer>
 
   <script>
-    const DELIVERY_API = window.location.protocol === "file:"
-      ? "http://127.0.0.1:8787/api/lead-submit"
-      : "/api/lead-submit";
+    const DELIVERY_API_STORAGE_KEY = "delivery_api_endpoint_v1";
+
+    function normalizeApiEndpoint(raw) {
+      const text = (raw || "").trim();
+      if (!text) return "";
+      return text.replace(/\/+$/, "");
+    }
+
+    function resolveDeliveryApi() {
+      const params = new URLSearchParams(window.location.search);
+      const queryApi = normalizeApiEndpoint(params.get("api") || "");
+      if (queryApi) {
+        localStorage.setItem(DELIVERY_API_STORAGE_KEY, queryApi);
+        return queryApi;
+      }
+
+      const savedApi = normalizeApiEndpoint(localStorage.getItem(DELIVERY_API_STORAGE_KEY) || "");
+      if (savedApi) return savedApi;
+
+      const hostname = window.location.hostname || "";
+      const isLocalHost = hostname === "127.0.0.1" || hostname === "localhost";
+      if (window.location.protocol === "file:" || isLocalHost) {
+        return "http://127.0.0.1:8787/api/lead-submit";
+      }
+      return "";
+    }
+
+    let DELIVERY_API = resolveDeliveryApi();
 
     const serviceLabelMap = {
       basic: "基础款 ¥9.9",
@@ -574,7 +625,34 @@
       statusEl.className = "delivery-status " + (type || "");
     }
 
+    function initDeliveryApiConfig() {
+      const input = document.getElementById("apiEndpointInput");
+      const saveBtn = document.getElementById("saveApiBtn");
+      input.value = DELIVERY_API;
+
+      saveBtn.addEventListener("click", function () {
+        const nextApi = normalizeApiEndpoint(input.value);
+        if (!nextApi) {
+          localStorage.removeItem(DELIVERY_API_STORAGE_KEY);
+          DELIVERY_API = "";
+          setDeliveryStatus("已清空飞书同步地址。", "err");
+          return;
+        }
+        localStorage.setItem(DELIVERY_API_STORAGE_KEY, nextApi);
+        DELIVERY_API = nextApi;
+        setDeliveryStatus("飞书同步地址已保存。", "ok");
+      });
+
+      if (!DELIVERY_API && window.location.hostname.endsWith("github.io")) {
+        setDeliveryStatus("检测到 GitHub Pages，请先在下方配置飞书中转 API 地址。", "err");
+      }
+    }
+
     async function pushLeadToFeishu(payload) {
+      if (!DELIVERY_API) {
+        setDeliveryStatus("未配置飞书中转 API 地址，请先在下方填写并保存。", "err");
+        return;
+      }
       setDeliveryStatus("正在同步到飞书...", "loading");
       try {
         const response = await fetch(DELIVERY_API, {
@@ -584,6 +662,9 @@
         });
         const result = await response.json().catch(function () { return {}; });
         if (!response.ok || !result.ok) {
+          if (response.status === 405) {
+            throw new Error("HTTP 405（当前地址不是可写入 API，请检查中转地址）");
+          }
           throw new Error(result.error || ("HTTP " + response.status));
         }
         setDeliveryStatus("已同步到飞书。", "ok");
@@ -783,6 +864,8 @@
 
       await pushLeadToFeishu(payload);
     });
+
+    initDeliveryApiConfig();
   </script>
 </body>
 </html>
